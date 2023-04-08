@@ -14,12 +14,10 @@
  */
 
 
-#include "cuda.h"
 #include "../common/book.h"
-#include "../common/cpu_anim.h"
+#include "../common/gpu_anim.h"
 
 #define DIM 1024
-#define PI 3.1415926535897932f
 #define MAX_TEMP 1.0f
 #define MIN_TEMP 0.0001f
 #define SPEED   0.25f
@@ -88,22 +86,19 @@ __global__ void copy_const_kernel( float *iptr ) {
 
 // globals needed by the update routine
 struct DataBlock {
-    unsigned char   *output_bitmap;
     float           *dev_inSrc;
     float           *dev_outSrc;
     float           *dev_constSrc;
-    CPUAnimBitmap  *bitmap;
 
     cudaEvent_t     start, stop;
     float           totalTime;
     float           frames;
 };
 
-void anim_gpu( DataBlock *d, int ticks ) {
+void anim_gpu( uchar4* outputBitmap, DataBlock *d, int ticks ) {
     HANDLE_ERROR( cudaEventRecord( d->start, 0 ) );
     dim3    blocks(DIM/16,DIM/16);
     dim3    threads(16,16);
-    CPUAnimBitmap  *bitmap = d->bitmap;
 
     // since tex is global and bound, we have to use a flag to
     // select which is in/out per iteration
@@ -121,13 +116,8 @@ void anim_gpu( DataBlock *d, int ticks ) {
         blend_kernel<<<blocks,threads>>>( out, dstOut );
         dstOut = !dstOut;
     }
-    float_to_color<<<blocks,threads>>>( d->output_bitmap,
+    float_to_color<<<blocks,threads>>>( outputBitmap,
                                         d->dev_inSrc );
-
-    HANDLE_ERROR( cudaMemcpy( bitmap->get_ptr(),
-                              d->output_bitmap,
-                              bitmap->image_size(),
-                              cudaMemcpyDeviceToHost ) );
 
     HANDLE_ERROR( cudaEventRecord( d->stop, 0 ) );
     HANDLE_ERROR( cudaEventSynchronize( d->stop ) );
@@ -142,9 +132,9 @@ void anim_gpu( DataBlock *d, int ticks ) {
 
 // clean up memory allocated on the GPU
 void anim_exit( DataBlock *d ) {
-    cudaUnbindTexture( texIn );
-    cudaUnbindTexture( texOut );
-    cudaUnbindTexture( texConstSrc );
+    HANDLE_ERROR( cudaUnbindTexture( texIn ) );
+    HANDLE_ERROR( cudaUnbindTexture( texOut ) );
+    HANDLE_ERROR( cudaUnbindTexture( texConstSrc ) );
     HANDLE_ERROR( cudaFree( d->dev_inSrc ) );
     HANDLE_ERROR( cudaFree( d->dev_outSrc ) );
     HANDLE_ERROR( cudaFree( d->dev_constSrc ) );
@@ -156,17 +146,13 @@ void anim_exit( DataBlock *d ) {
 
 int main( void ) {
     DataBlock   data;
-    CPUAnimBitmap bitmap( DIM, DIM, &data );
-    data.bitmap = &bitmap;
+    GPUAnimBitmap bitmap( DIM, DIM, &data );
     data.totalTime = 0;
     data.frames = 0;
     HANDLE_ERROR( cudaEventCreate( &data.start ) );
     HANDLE_ERROR( cudaEventCreate( &data.stop ) );
 
     int imageSize = bitmap.image_size();
-
-    HANDLE_ERROR( cudaMalloc( (void**)&data.output_bitmap,
-                               imageSize ) );
 
     // assume float == 4 chars in size (ie rgba)
     HANDLE_ERROR( cudaMalloc( (void**)&data.dev_inSrc,
@@ -221,6 +207,6 @@ int main( void ) {
                               cudaMemcpyHostToDevice ) );
     free( temp );
 
-    bitmap.anim_and_exit( (void (*)(void*,int))anim_gpu,
+    bitmap.anim_and_exit( (void (*)(uchar4*,void*,int))anim_gpu,
                            (void (*)(void*))anim_exit );
 }
